@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import * as THREE from "three";
 
 // ============================================================================
 // DATA CONFIGURATION
@@ -96,35 +97,13 @@ const GAMES_DB = [
 const DEMO_GAMES = [
   {
     id: "demo_fantasy",
-    name: "Elden Ring",
-    aliases: ["elden ring"],
-    mapImage: null, // Will use generated map
+    name: "Mass Effect Andromeda",
+    aliases: ["mass effect andromeda", "mea", "mass effect 4", "andromeda"],
+    mapImage: "https://res.cloudinary.com/dekc2zhms/image/upload/v1772329696/MEA_Map1_lyuvsh.jpg", // Will use generated map
     rounds: [
-      { panorama: null, correctMapPos: { x: 35, y: 42 }, locationName: "Limgrave - Church of Elleh" },
-      { panorama: null, correctMapPos: { x: 62, y: 28 }, locationName: "Liurnia - Academy Gate" },
-      { panorama: null, correctMapPos: { x: 48, y: 65 }, locationName: "Caelid - Rotview Balcony" },
-    ],
-  },
-  {
-    id: "demo_scifi",
-    name: "Cyberpunk 2077",
-    aliases: ["cyberpunk", "cyberpunk 2077", "cp2077"],
-    mapImage: null,
-    rounds: [
-      { panorama: null, correctMapPos: { x: 55, y: 50 }, locationName: "Watson - Kabuki" },
-      { panorama: null, correctMapPos: { x: 30, y: 70 }, locationName: "Westbrook - Japantown" },
-      { panorama: null, correctMapPos: { x: 72, y: 38 }, locationName: "City Center - Corpo Plaza" },
-    ],
-  },
-  {
-    id: "demo_medieval",
-    name: "The Witcher 3",
-    aliases: ["witcher 3", "the witcher 3", "witcher 3 wild hunt", "tw3"],
-    mapImage: null,
-    rounds: [
-      { panorama: null, correctMapPos: { x: 40, y: 55 }, locationName: "Novigrad - Harbor" },
-      { panorama: null, correctMapPos: { x: 65, y: 35 }, locationName: "Velen - Crow's Perch" },
-      { panorama: null, correctMapPos: { x: 25, y: 45 }, locationName: "Skellige - Kaer Trolde" },
+      { panorama: "https://res.cloudinary.com/dekc2zhms/image/upload/v1772328903/MEA_Panorama1_oko6tt.jpg", correctMapPos: { x: 35, y: 42 }, locationName: "Habitat 7" },
+      { panorama: "https://res.cloudinary.com/dekc2zhms/image/upload/v1772328903/MEA_Panorama1_oko6tt.jpg", correctMapPos: { x: 62, y: 28 }, locationName: "Eos - Prodromos" },
+      { panorama: "https://res.cloudinary.com/dekc2zhms/image/upload/v1772328903/MEA_Panorama1_oko6tt.jpg", correctMapPos: { x: 48, y: 65 }, locationName: "Kadara Port" },
     ],
   },
 ];
@@ -203,202 +182,239 @@ function generateRounds(games, count) {
 }
 
 // ============================================================================
-// PANORAMA VIEWER COMPONENT (360° equirectangular)
+// PANORAMA VIEWER COMPONENT (360° equirectangular via Three.js)
 // ============================================================================
 
 function PanoramaViewer({ imageUrl, isDemo }) {
-  const canvasRef = useRef(null);
-  const stateRef = useRef({
-    isDragging: false,
-    lastX: 0,
-    lastY: 0,
-    lon: 0,
-    lat: 0,
-    fov: 75,
-  });
+  const containerRef = useRef(null);
+  const cleanupRef = useRef(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const state = stateRef.current;
-    let animFrame;
+    const container = containerRef.current;
+    if (!container) return;
 
-    // Set canvas size
-    const resize = () => {
-      canvas.width = canvas.parentElement.clientWidth;
-      canvas.height = canvas.parentElement.clientHeight;
+    let destroyed = false;
+    setLoading(true);
+    setError(null);
+
+    // Setup renderer
+    const width = container.clientWidth || 800;
+    const height = container.clientHeight || 600;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    container.appendChild(renderer.domElement);
+
+    // Scene & camera
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1100);
+    camera.position.set(0, 0, 0.1);
+
+    // Create sphere geometry (inside-out so texture faces inward)
+    const geometry = new THREE.SphereGeometry(500, 60, 40);
+    geometry.scale(-1, 1, 1);
+
+    const addMeshToScene = (texture) => {
+      if (destroyed) return;
+      const material = new THREE.MeshBasicMaterial({ map: texture });
+      const mesh = new THREE.Mesh(geometry, material);
+      scene.add(mesh);
+      setLoading(false);
     };
-    resize();
-    window.addEventListener("resize", resize);
 
-    if (isDemo) {
-      // Generate a demo panorama with colored gradient
-      const drawDemo = () => {
-        const w = canvas.width;
-        const h = canvas.height;
+    if (isDemo || !imageUrl) {
+      // Generate demo texture
+      const c = document.createElement("canvas");
+      c.width = 2048;
+      c.height = 1024;
+      const ctx = c.getContext("2d");
 
-        // Convert lon/lat to viewport offset
-        const offsetX = ((state.lon % 360) / 360) * w;
-        const offsetY = (state.lat / 180) * h;
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, 1024);
+      skyGrad.addColorStop(0, "#0a0a2e");
+      skyGrad.addColorStop(0.4, "#16213e");
+      skyGrad.addColorStop(0.55, "#1a1a3e");
+      skyGrad.addColorStop(0.6, "#2a2a2a");
+      skyGrad.addColorStop(1, "#1a1a1a");
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, 2048, 1024);
 
-        // Create a gradient-based environment
-        const gradient = ctx.createLinearGradient(0, 0, w, h);
-        gradient.addColorStop(0, "#1a1a2e");
-        gradient.addColorStop(0.3, "#16213e");
-        gradient.addColorStop(0.6, "#0f3460");
-        gradient.addColorStop(1, "#533483");
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      for (let x = 0; x < 2048; x += 64) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 1024); ctx.stroke();
+      }
+      for (let y = 0; y < 1024; y += 64) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(2048, y); ctx.stroke();
+      }
 
-        // Draw grid lines to show panning
-        ctx.strokeStyle = "rgba(255,255,255,0.08)";
-        ctx.lineWidth = 1;
-        for (let i = 0; i < 36; i++) {
-          const x = ((i * (w / 12) - offsetX) % w + w) % w;
-          ctx.beginPath();
-          ctx.moveTo(x, 0);
-          ctx.lineTo(x, h);
-          ctx.stroke();
-        }
-        for (let i = 0; i < 18; i++) {
-          const y = ((i * (h / 6) - offsetY) % h + h) % h;
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(w, y);
-          ctx.stroke();
-        }
-
-        // Draw some "buildings" / landmarks
-        const seed = imageUrl ? imageUrl.charCodeAt(0) || 42 : 42;
-        for (let i = 0; i < 15; i++) {
-          const bx = ((i * 137 + seed * 31) % w - offsetX % w + w) % w;
-          const bh = 40 + ((i * 73 + seed) % 120);
-          const bw = 20 + ((i * 47 + seed) % 40);
-          const by = h * 0.6 - offsetY * 0.3 - bh;
-          ctx.fillStyle = `hsla(${(i * 37 + seed * 13) % 360}, 40%, ${20 + (i % 3) * 10}%, 0.7)`;
-          ctx.fillRect(bx, by, bw, bh);
-          // Windows
-          ctx.fillStyle = `hsla(45, 80%, 70%, ${0.3 + (i % 3) * 0.2})`;
-          for (let wy = by + 8; wy < by + bh - 5; wy += 15) {
-            for (let wx = bx + 5; wx < bx + bw - 5; wx += 10) {
-              ctx.fillRect(wx, wy, 4, 6);
-            }
+      for (let i = 0; i < 30; i++) {
+        const bx = (i * 137) % 2048;
+        const bh = 60 + (i * 73) % 150;
+        const bw = 25 + (i * 47) % 50;
+        ctx.fillStyle = `hsla(${(i * 37) % 360}, 30%, ${15 + (i % 4) * 8}%, 0.8)`;
+        ctx.fillRect(bx, 580 - bh, bw, bh);
+        ctx.fillStyle = `hsla(45, 70%, 60%, 0.4)`;
+        for (let wy = 580 - bh + 8; wy < 576; wy += 14) {
+          for (let wx = bx + 4; wx < bx + bw - 4; wx += 9) {
+            ctx.fillRect(wx, wy, 4, 6);
           }
         }
+      }
 
-        // Stars
-        for (let i = 0; i < 60; i++) {
-          const sx = ((i * 197 + seed * 41) % w - offsetX * 0.5 % w + w) % w;
-          const sy = ((i * 131 + seed * 17) % (h * 0.4)) - offsetY * 0.2;
-          ctx.fillStyle = `rgba(255,255,255,${0.3 + (i % 5) * 0.15})`;
-          ctx.beginPath();
-          ctx.arc(sx, sy, 1 + (i % 3) * 0.5, 0, Math.PI * 2);
-          ctx.fill();
-        }
+      for (let i = 0; i < 200; i++) {
+        ctx.fillStyle = `rgba(255,255,255,${0.2 + Math.random() * 0.6})`;
+        ctx.beginPath();
+        ctx.arc(Math.random() * 2048, Math.random() * 450, 0.5 + Math.random() * 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
-        // Ground
-        const groundY = h * 0.7 - offsetY * 0.3;
-        const gGradient = ctx.createLinearGradient(0, groundY, 0, h);
-        gGradient.addColorStop(0, "rgba(30,30,50,0.8)");
-        gGradient.addColorStop(1, "rgba(20,20,35,0.9)");
-        ctx.fillStyle = gGradient;
-        ctx.fillRect(0, groundY, w, h - groundY);
+      ctx.fillStyle = "rgba(255,255,255,0.15)";
+      ctx.font = "24px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("DEMO MODE — Drag to look around", 1024, 980);
 
-        // Instruction text
-        ctx.fillStyle = "rgba(255,255,255,0.3)";
-        ctx.font = "14px monospace";
-        ctx.textAlign = "center";
-        ctx.fillText("🎮 DEMO MODE — Drag to look around", w / 2, h - 20);
-        ctx.fillText(`lon: ${state.lon.toFixed(0)}° lat: ${state.lat.toFixed(0)}°`, w / 2, h - 40);
-
-        animFrame = requestAnimationFrame(drawDemo);
-      };
-      drawDemo();
+      addMeshToScene(new THREE.CanvasTexture(c));
     } else {
-      // Real equirectangular panorama rendering
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.src = imageUrl;
-      img.onload = () => {
-        const draw = () => {
-          const w = canvas.width;
-          const h = canvas.height;
-
-          // Map lon/lat to source rectangle in equirectangular image
-          const fovRad = (state.fov * Math.PI) / 180;
-          const aspectRatio = w / h;
-
-          // Source coordinates (normalized 0-1)
-          const lonNorm = ((state.lon % 360) + 360) % 360 / 360;
-          const latNorm = (state.lat + 90) / 180;
-
-          const viewWidth = state.fov / 360;
-          const viewHeight = viewWidth / aspectRatio;
-
-          const sx = (lonNorm - viewWidth / 2) * img.width;
-          const sy = (latNorm - viewHeight / 2) * img.height;
-          const sw = viewWidth * img.width;
-          const sh = viewHeight * img.height;
-
-          ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
-
-          animFrame = requestAnimationFrame(draw);
-        };
-        draw();
-      };
+      const loader = new THREE.TextureLoader();
+      loader.crossOrigin = "anonymous";
+      loader.load(
+        imageUrl,
+        (texture) => addMeshToScene(texture),
+        undefined,
+        (err) => {
+          if (!destroyed) {
+            console.error("Failed to load panorama:", err);
+            setError("Failed to load panorama image");
+            setLoading(false);
+          }
+        }
+      );
     }
 
-    // Mouse/touch controls
+    // Drag controls
+    let isDragging = false;
+    let lastX = 0, lastY = 0;
+    let lon = 0, lat = 0;
+
     const onPointerDown = (e) => {
-      state.isDragging = true;
-      state.lastX = e.clientX || e.touches?.[0]?.clientX || 0;
-      state.lastY = e.clientY || e.touches?.[0]?.clientY || 0;
+      isDragging = true;
+      lastX = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+      lastY = e.clientY ?? e.touches?.[0]?.clientY ?? 0;
+      renderer.domElement.style.cursor = "grabbing";
     };
     const onPointerMove = (e) => {
-      if (!state.isDragging) return;
-      const x = e.clientX || e.touches?.[0]?.clientX || 0;
-      const y = e.clientY || e.touches?.[0]?.clientY || 0;
-      const dx = x - state.lastX;
-      const dy = y - state.lastY;
-      state.lon -= dx * 0.3;
-      state.lat = Math.max(-60, Math.min(60, state.lat + dy * 0.3));
-      state.lastX = x;
-      state.lastY = y;
+      if (!isDragging) return;
+      const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+      const y = e.clientY ?? e.touches?.[0]?.clientY ?? 0;
+      lon += (lastX - x) * 0.15;
+      lat += (y - lastY) * 0.15;
+      lat = Math.max(-85, Math.min(85, lat));
+      lastX = x;
+      lastY = y;
     };
     const onPointerUp = () => {
-      state.isDragging = false;
+      isDragging = false;
+      renderer.domElement.style.cursor = "grab";
     };
     const onWheel = (e) => {
-      state.fov = Math.max(30, Math.min(120, state.fov + e.deltaY * 0.05));
+      camera.fov = Math.max(30, Math.min(100, camera.fov + e.deltaY * 0.05));
+      camera.updateProjectionMatrix();
     };
 
-    canvas.addEventListener("mousedown", onPointerDown);
-    canvas.addEventListener("mousemove", onPointerMove);
-    canvas.addEventListener("mouseup", onPointerUp);
-    canvas.addEventListener("mouseleave", onPointerUp);
-    canvas.addEventListener("touchstart", onPointerDown);
-    canvas.addEventListener("touchmove", onPointerMove);
-    canvas.addEventListener("touchend", onPointerUp);
-    canvas.addEventListener("wheel", onWheel);
+    renderer.domElement.style.cursor = "grab";
+    renderer.domElement.addEventListener("mousedown", onPointerDown);
+    renderer.domElement.addEventListener("mousemove", onPointerMove);
+    renderer.domElement.addEventListener("mouseup", onPointerUp);
+    renderer.domElement.addEventListener("mouseleave", onPointerUp);
+    renderer.domElement.addEventListener("touchstart", onPointerDown, { passive: true });
+    renderer.domElement.addEventListener("touchmove", onPointerMove, { passive: true });
+    renderer.domElement.addEventListener("touchend", onPointerUp);
+    renderer.domElement.addEventListener("wheel", onWheel, { passive: true });
+
+    // Animation loop
+    const animate = () => {
+      if (destroyed) return;
+      requestAnimationFrame(animate);
+
+      const phi = THREE.MathUtils.degToRad(90 - lat);
+      const theta = THREE.MathUtils.degToRad(lon);
+
+      camera.lookAt(
+        500 * Math.sin(phi) * Math.cos(theta),
+        500 * Math.cos(phi),
+        500 * Math.sin(phi) * Math.sin(theta)
+      );
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    // Resize handler
+    const onResize = () => {
+      if (destroyed) return;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      if (w && h) {
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+      }
+    };
+    window.addEventListener("resize", onResize);
+
+    cleanupRef.current = () => {
+      destroyed = true;
+      window.removeEventListener("resize", onResize);
+      renderer.dispose();
+      geometry.dispose();
+      if (renderer.domElement && renderer.domElement.parentNode) {
+        renderer.domElement.parentNode.removeChild(renderer.domElement);
+      }
+    };
 
     return () => {
-      cancelAnimationFrame(animFrame);
-      window.removeEventListener("resize", resize);
-      canvas.removeEventListener("mousedown", onPointerDown);
-      canvas.removeEventListener("mousemove", onPointerMove);
-      canvas.removeEventListener("mouseup", onPointerUp);
-      canvas.removeEventListener("mouseleave", onPointerUp);
-      canvas.removeEventListener("touchstart", onPointerDown);
-      canvas.removeEventListener("touchmove", onPointerMove);
-      canvas.removeEventListener("touchend", onPointerUp);
-      canvas.removeEventListener("wheel", onWheel);
+      if (cleanupRef.current) cleanupRef.current();
     };
   }, [imageUrl, isDemo]);
 
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative", cursor: "grab" }}>
-      <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+    <div ref={containerRef} style={{ width: "100%", height: "100%", position: "relative", background: "#000" }}>
+      {loading && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center",
+          justifyContent: "center", flexDirection: "column", gap: 12, zIndex: 10,
+          background: "#000"
+        }}>
+          <div style={{
+            width: 40, height: 40, border: "3px solid rgba(255,255,255,0.1)",
+            borderTopColor: "#00ff88", borderRadius: "50%",
+            animation: "spin 1s linear infinite"
+          }} />
+          <span style={{
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 13,
+            color: "rgba(255,255,255,0.4)"
+          }}>Loading panorama...</span>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
+      {error && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center",
+          justifyContent: "center", flexDirection: "column", gap: 8, zIndex: 10,
+          background: "#000"
+        }}>
+          <span style={{ fontSize: 32 }}>⚠️</span>
+          <span style={{
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 13,
+            color: "#ff6666"
+          }}>{error}</span>
+          <span style={{
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 11,
+            color: "rgba(255,255,255,0.3)", maxWidth: 300, textAlign: "center"
+          }}>Check that the image URL is accessible and has CORS enabled</span>
+        </div>
+      )}
     </div>
   );
 }
